@@ -1,0 +1,11 @@
+# Binaries
+orego
+
+# IDEs
+.vscode/
+.idea/
+
+# Local data
+*.db
+*.db-journal
+*.png
