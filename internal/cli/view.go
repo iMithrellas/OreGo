@@ -62,9 +62,21 @@ func runView(cmd *cobra.Command, args []string) {
 
 	if useIcat {
 		fmt.Printf("Rendering %s with icat...\n", path)
-		icatCmd := exec.Command("kitty", "+kitten", "icat", path)
+		
+		// Open the file to pipe it into stdin
+		file, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+			os.Exit(1)
+		}
+		defer file.Close()
+
+		// Use stream transfer mode and pipe content via stdin
+		icatCmd := exec.Command("kitty", "+kitten", "icat", "--transfer-mode=stream")
+		icatCmd.Stdin = file
 		icatCmd.Stdout = os.Stdout
 		icatCmd.Stderr = os.Stderr
+		
 		if err := icatCmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error running icat: %v\n", err)
 			os.Exit(1)
