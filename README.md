@@ -82,6 +82,9 @@ orego list
 # Interactive TUI
 orego list --tui
 
+# TUI keys
+# ? = help, g = open folder, C/Y = copy path, c/y = copy image, d = delete
+
 # Filter
 orego list --filter-by app firefox
 orego list --filter-by title "GitHub"
@@ -97,6 +100,12 @@ orego view 42
 Copy a screenshot to the clipboard by ID.
 ```bash
 orego copy 42
+```
+
+### Path
+Print the full path to a screenshot.
+```bash
+orego path 42
 ```
 
 ### Cleanup

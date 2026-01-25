@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	lipglossv2 "github.com/charmbracelet/lipgloss/v2"
 
 	"orego/internal/db"
 	"orego/pkg/models"
@@ -26,7 +30,10 @@ func RenderTable(store *db.Store) error {
 		entries:   entries,
 		showIdx:   -1,
 		deleteIdx: -1,
+		keys:      newKeyMap(),
+		help:      help.New(),
 	}
+	m.help.ShowAll = true
 	m.initTable()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -43,6 +50,74 @@ type model struct {
 	width     int
 	height    int
 	status    string
+	keys      keyMap
+	help      help.Model
+	showHelp  bool
+}
+
+type keyMap struct {
+	Up         key.Binding
+	Down       key.Binding
+	Open       key.Binding
+	CopyImage  key.Binding
+	OpenFolder key.Binding
+	CopyFolder key.Binding
+	Delete     key.Binding
+	Help       key.Binding
+	Quit       key.Binding
+}
+
+func newKeyMap() keyMap {
+	return keyMap{
+		Up: key.NewBinding(
+			key.WithKeys("k", "up"),
+			key.WithHelp("k/↑", "move up"),
+		),
+		Down: key.NewBinding(
+			key.WithKeys("j", "down"),
+			key.WithHelp("j/↓", "move down"),
+		),
+		Open: key.NewBinding(
+			key.WithKeys("enter", "i"),
+			key.WithHelp("enter/i", "open"),
+		),
+		CopyImage: key.NewBinding(
+			key.WithKeys("c", "y"),
+			key.WithHelp("c/y", "copy image"),
+		),
+		OpenFolder: key.NewBinding(
+			key.WithKeys("g"),
+			key.WithHelp("g", "open folder"),
+		),
+		CopyFolder: key.NewBinding(
+			key.WithKeys("C", "Y"),
+			key.WithHelp("C/Y", "copy path"),
+		),
+		Delete: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "delete"),
+		),
+		Help: key.NewBinding(
+			key.WithKeys("?"),
+			key.WithHelp("?", "help"),
+		),
+		Quit: key.NewBinding(
+			key.WithKeys("q", "esc", "ctrl+c"),
+			key.WithHelp("q/esc", "quit"),
+		),
+	}
+}
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Help, k.Quit}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.Open, k.CopyImage},
+		{k.OpenFolder, k.CopyFolder, k.Delete},
+		{k.Help, k.Quit},
+	}
 }
 
 func (m *model) initTable() {
@@ -82,10 +157,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		switch {
+		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
-		case "enter":
+		case key.Matches(msg, m.keys.Help):
+			m.showHelp = !m.showHelp
+			return m, nil
+		case key.Matches(msg, m.keys.Open):
 			idx := m.table.Cursor()
 			if idx >= 0 && idx < len(m.entries) {
 				sel := m.entries[idx]
@@ -93,7 +171,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("Opened %s", sel.FilePath)
 			}
 			return m, nil
-		case "c":
+		case key.Matches(msg, m.keys.CopyImage):
 			idx := m.table.Cursor()
 			if idx >= 0 && idx < len(m.entries) {
 				sel := m.entries[idx]
@@ -117,7 +195,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Copied to clipboard"
 			}
 			return m, nil
-		case "d":
+		case key.Matches(msg, m.keys.OpenFolder):
+			idx := m.table.Cursor()
+			if idx >= 0 && idx < len(m.entries) {
+				sel := m.entries[idx]
+				if _, err := os.Stat(sel.FilePath); err != nil {
+					if os.IsNotExist(err) {
+						m.status = fmt.Sprintf("Missing file: %s", sel.FilePath)
+					} else {
+						m.status = fmt.Sprintf("Stat failed: %v", err)
+					}
+					return m, nil
+				}
+				folder := filepath.Dir(sel.FilePath)
+				if err := exec.Command("xdg-open", folder).Start(); err != nil {
+					m.status = fmt.Sprintf("Open folder failed: %v", err)
+					return m, nil
+				}
+				m.status = fmt.Sprintf("Opened %s", folder)
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.CopyFolder):
+			idx := m.table.Cursor()
+			if idx >= 0 && idx < len(m.entries) {
+				sel := m.entries[idx]
+				if _, err := os.Stat(sel.FilePath); err != nil {
+					if os.IsNotExist(err) {
+						m.status = fmt.Sprintf("Missing file: %s", sel.FilePath)
+					} else {
+						m.status = fmt.Sprintf("Stat failed: %v", err)
+					}
+					return m, nil
+				}
+				copyCmd := exec.Command("wl-copy")
+				copyCmd.Stdin = strings.NewReader(sel.FilePath)
+				if err := copyCmd.Run(); err != nil {
+					m.status = fmt.Sprintf("Copy path failed: %v", err)
+					return m, nil
+				}
+				m.status = "Copied path to clipboard"
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Delete):
 			idx := m.table.Cursor()
 			if idx >= 0 && idx < len(m.entries) {
 				sel := m.entries[idx]
@@ -144,11 +263,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	base := m.table.View() + "\n" + m.renderFooter()
+	if m.showHelp {
+		helpView, w, h := m.helpModalView()
+		return m.renderOverlay(base, helpView, w, h)
+	}
 	return base
 }
 
 func (m model) renderFooter() string {
-	left := "↑/↓ to navigate • enter=open • c=copy • d=delete • q=quit"
+	left := "? for help"
 	right := fmt.Sprintf("%d items", len(m.entries))
 	if m.status != "" {
 		right = m.status + " • " + right
@@ -163,6 +286,47 @@ func (m model) renderFooter() string {
 		space = 1
 	}
 	return left + strings.Repeat(" ", space) + right
+}
+
+func (m model) helpModalView() (string, int, int) {
+	content := m.help.View(m.keys)
+	box := lipgloss.NewStyle().
+		Padding(1, 2).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("63"))
+	view := box.Render(content)
+	return view, lipgloss.Width(view), lipgloss.Height(view)
+}
+
+func (m model) renderOverlay(base, overlay string, overlayW, overlayH int) string {
+	termW, termH := m.width, m.height
+	if termW <= 0 {
+		termW = 80
+	}
+	if termH <= 0 {
+		termH = 24
+	}
+
+	x := (termW - overlayW) / 2
+	y := (termH - overlayH) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	dimBase := lipglossv2.NewStyle().Faint(true).Render(base)
+	baseLayer := lipglossv2.NewLayer(dimBase).
+		Width(termW).
+		Height(termH)
+	overlayLayer := lipglossv2.NewLayer(overlay).
+		Width(overlayW).
+		Height(overlayH).
+		X(x).
+		Y(y)
+
+	return lipglossv2.NewCanvas(baseLayer, overlayLayer).Render()
 }
 
 func (m *model) applyLayout() {
