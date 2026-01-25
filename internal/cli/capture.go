@@ -10,14 +10,20 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"orego/internal/config"
 	"orego/internal/db"
 	"orego/pkg/hyprland"
 )
 
 var (
-	timeout time.Duration
-	ocr     bool
-	all     bool
+	timeout      time.Duration
+	ocr          bool
+	all          bool
+	grimCmd      string
+	editorCmd    string
+	ocrCmd       string
+	clipboardCmd string
+	notifyCmd    string
 )
 
 var captureCmd = &cobra.Command{
@@ -30,25 +36,42 @@ func init() {
 	captureCmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Max time to wait for file creation after editor closes")
 	captureCmd.Flags().BoolVar(&ocr, "ocr", false, "Perform OCR and copy to clipboard (no DB save)")
 	captureCmd.Flags().BoolVar(&all, "all", false, "Capture all visible workspaces")
+	captureCmd.Flags().StringVar(&grimCmd, "grim-cmd", "grim", "Command used to capture screenshots")
+	captureCmd.Flags().StringVar(&editorCmd, "editor-cmd", "satty", "Command used to edit/annotate screenshots")
+	captureCmd.Flags().StringVar(&ocrCmd, "ocr-cmd", "tesseract", "Command used to perform OCR")
+	captureCmd.Flags().StringVar(&clipboardCmd, "clipboard-cmd", "wl-copy", "Command used to copy OCR text to clipboard")
+	captureCmd.Flags().StringVar(&notifyCmd, "notify-cmd", "notify-send", "Command used to send OCR notifications")
 	rootCmd.AddCommand(captureCmd)
 }
 
-func runOCRFlow(tmpPath string) error {
+func runOCRFlow(cmd *cobra.Command, tmpPath string) error {
 	ocrPath := filepath.Join(
 		os.TempDir(),
 		fmt.Sprintf("orego-ocr-%d.png", time.Now().UnixNano()),
 	)
 
-	fmt.Println("Opening satty for OCR... (Crop if needed, then click Save)")
-
-	sattyArgs := []string{
-		"-f", tmpPath,
-		"-d", "--disable-notifications",
-		"--output-filename", ocrPath,
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
 
-	if err := exec.Command("satty", sattyArgs...).Run(); err != nil {
-		return fmt.Errorf("satty exited: %w", err)
+	fmt.Println("Opening editor for OCR... (Crop if needed, then click Save)")
+
+	editorCmdToUse := editorCmd
+	if !cmd.Flags().Changed("editor-cmd") && cfg.Capture.Editor.Cmd != "" {
+		editorCmdToUse = cfg.Capture.Editor.Cmd
+	}
+
+	ocrEditorArgs, err := config.RenderArgs(cfg.Capture.Editor.ArgsOCR, map[string]string{
+		"Input":  tmpPath,
+		"Output": ocrPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := exec.Command(editorCmdToUse, ocrEditorArgs...).Run(); err != nil {
+		return fmt.Errorf("editor exited: %w", err)
 	}
 
 	if _, err := os.Stat(ocrPath); err != nil {
@@ -56,25 +79,54 @@ func runOCRFlow(tmpPath string) error {
 	}
 	defer os.Remove(ocrPath)
 
-	ocrCmd := exec.Command(
-		"tesseract",
-		ocrPath,
-		"stdout",
-		"-l", "eng+ces",
-		"--psm", "6",
-	)
-	text, err := ocrCmd.Output()
-	if err != nil {
-		return fmt.Errorf("tesseract failed: %w", err)
+	ocrCmdToUse := ocrCmd
+	if !cmd.Flags().Changed("ocr-cmd") && cfg.Capture.OCR.Cmd != "" {
+		ocrCmdToUse = cfg.Capture.OCR.Cmd
 	}
 
-	wl := exec.Command("wl-copy")
+	ocrArgs, err := config.RenderArgs(cfg.Capture.OCR.Args, map[string]string{
+		"Input": ocrPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	ocrCommand := exec.Command(ocrCmdToUse, ocrArgs...)
+	text, err := ocrCommand.Output()
+	if err != nil {
+		return fmt.Errorf("ocr command failed: %w", err)
+	}
+
+	clipboardCmdToUse := clipboardCmd
+	if !cmd.Flags().Changed("clipboard-cmd") && cfg.Capture.Clipboard.Cmd != "" {
+		clipboardCmdToUse = cfg.Capture.Clipboard.Cmd
+	}
+
+	clipboardArgs, err := config.RenderArgs(cfg.Capture.Clipboard.Args, map[string]string{})
+	if err != nil {
+		return err
+	}
+
+	wl := exec.Command(clipboardCmdToUse, clipboardArgs...)
 	wl.Stdin = bytes.NewReader(text)
 	if err := wl.Run(); err != nil {
-		return fmt.Errorf("wl-copy failed: %w", err)
+		return fmt.Errorf("clipboard command failed: %w", err)
 	}
 
-	exec.Command("notify-send", "OCR", "Text copied to clipboard").Run()
+	notifyCmdToUse := notifyCmd
+	if !cmd.Flags().Changed("notify-cmd") && cfg.Capture.Notify.Cmd != "" {
+		notifyCmdToUse = cfg.Capture.Notify.Cmd
+	}
+
+	notifyArgs, err := config.RenderArgs(cfg.Capture.Notify.Args, map[string]string{
+		"Title": "OCR",
+		"Body":  "Text copied to clipboard",
+	})
+	if err != nil {
+		return err
+	}
+
+	exec.Command(notifyCmdToUse, notifyArgs...).Run()
 	return nil
 }
 
@@ -91,6 +143,12 @@ func runCapture(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
 	tmpFile, err := os.CreateTemp("", "orego-raw-*.png")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating temp file: %v\n", err)
@@ -102,18 +160,32 @@ func runCapture(cmd *cobra.Command, args []string) {
 
 	monitor := data.Workspace.Monitor
 
-	grimArgs := []string{tmpPath}
-	if !all && monitor != "" && monitor != "all-visible" {
-		grimArgs = []string{"-o", monitor, tmpPath}
+	grimCmdToUse := grimCmd
+	if !cmd.Flags().Changed("grim-cmd") && cfg.Capture.Grim.Cmd != "" {
+		grimCmdToUse = cfg.Capture.Grim.Cmd
 	}
 
-	if err := exec.Command("grim", grimArgs...).Run(); err != nil {
+	grimArgsTemplate := cfg.Capture.Grim.ArgsAll
+	if !all && monitor != "" && monitor != "all-visible" {
+		grimArgsTemplate = cfg.Capture.Grim.ArgsSingle
+	}
+
+	grimArgs, err := config.RenderArgs(grimArgsTemplate, map[string]string{
+		"Monitor": monitor,
+		"Output":  tmpPath,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error rendering grim args: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := exec.Command(grimCmdToUse, grimArgs...).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running grim: %v\n", err)
 		os.Exit(1)
 	}
 
 	if ocr {
-		if err := runOCRFlow(tmpPath); err != nil {
+		if err := runOCRFlow(cmd, tmpPath); err != nil {
 			fmt.Fprintf(os.Stderr, "OCR failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -138,14 +210,28 @@ func runCapture(cmd *cobra.Command, args []string) {
 	targetFilename := fmt.Sprintf("%s_orego.png", timestamp)
 	targetPath := filepath.Join(screenshotsDir, targetFilename)
 
-	fmt.Println("Opening satty... (Waiting for you to save and close the window)")
-	sattyCmd := exec.Command("satty", "-f", tmpPath, "--output-filename", targetPath)
+	fmt.Println("Opening editor... (Waiting for you to save and close the window)")
+	editorCmdToUse := editorCmd
+	if !cmd.Flags().Changed("editor-cmd") && cfg.Capture.Editor.Cmd != "" {
+		editorCmdToUse = cfg.Capture.Editor.Cmd
+	}
+
+	editorArgs, err := config.RenderArgs(cfg.Capture.Editor.Args, map[string]string{
+		"Input":  tmpPath,
+		"Output": targetPath,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error rendering editor args: %v\n", err)
+		os.Exit(1)
+	}
+
+	sattyCmd := exec.Command(editorCmdToUse, editorArgs...)
 	sattyCmd.Stdin = os.Stdin
 	sattyCmd.Stdout = os.Stdout
 	sattyCmd.Stderr = os.Stderr
 
 	if err := sattyCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Satty exited with: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Editor exited with: %v\n", err)
 	}
 
 	start := time.Now()

@@ -104,3 +104,50 @@ bind = $mainMod, S, exec, orego capture
 bind = $mainMod SHIFT, S, exec, orego capture --ocr
 bind = $mainMod CTRL, S, exec, orego capture --all
 ```
+
+## Command Overrides
+
+Use `~/.config/orego/config.json` to override commands and argument patterns.
+
+```json
+{
+  "capture": {
+    "grim": {
+      "cmd": "grim",
+      "args_all": ["{{.Output}}"],
+      "args_single": ["-o", "{{.Monitor}}", "{{.Output}}"]
+    },
+    "editor": {
+      "cmd": "satty",
+      "args": ["-f", "{{.Input}}", "--output-filename", "{{.Output}}"],
+      "args_ocr": ["-f", "{{.Input}}", "-d", "--disable-notifications", "--output-filename", "{{.Output}}"]
+    },
+    "ocr": {
+      "cmd": "tesseract",
+      "args": ["{{.Input}}", "stdout", "-l", "eng+ces", "--psm", "6"]
+    },
+    "clipboard": {
+      "cmd": "wl-copy",
+      "args": []
+    },
+    "notify": {
+      "cmd": "notify-send",
+      "args": ["{{.Title}}", "{{.Body}}"]
+    }
+  }
+}
+```
+
+Template fields:
+
+- Grim: `{{.Output}}`, `{{.Monitor}}`
+- Editor: `{{.Input}}`, `{{.Output}}`
+- OCR: `{{.Input}}`
+- Notify: `{{.Title}}`, `{{.Body}}`
+- Clipboard: no template fields (stdin only)
+
+You can still override just the command binaries per-run:
+
+```bash
+orego capture --grim-cmd grim --editor-cmd satty
+```
