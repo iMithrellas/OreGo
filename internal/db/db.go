@@ -146,7 +146,7 @@ func (s *Store) ListScreenshots(limit int, filterField, filterValue string) ([]m
 	FROM screenshots`
 
 	var args []interface{}
-	
+
 	// Whitelist filter fields to prevent injection
 	fieldMap := map[string]string{
 		"app":   "active_window_class",
@@ -158,8 +158,11 @@ func (s *Store) ListScreenshots(limit int, filterField, filterValue string) ([]m
 		args = append(args, "%"+filterValue+"%")
 	}
 
-	baseQuery += " ORDER BY id DESC LIMIT ?"
-	args = append(args, limit)
+	baseQuery += " ORDER BY id DESC"
+	if limit > 0 {
+		baseQuery += " LIMIT ?"
+		args = append(args, limit)
+	}
 
 	rows, err := s.db.Query(baseQuery, args...)
 	if err != nil {

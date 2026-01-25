@@ -16,7 +16,7 @@ import (
 
 func RenderTable(store *db.Store) error {
 	// Fetch initial data
-	entries, err := store.ListScreenshots(100, "", "")
+	entries, err := store.ListScreenshots(0, "", "")
 	if err != nil {
 		return err
 	}
